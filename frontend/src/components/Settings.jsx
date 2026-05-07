@@ -126,6 +126,18 @@ const SettingsPage = () => {
 
     setShifts(nextShifts);
     await persistShifts(nextShifts);
+     setTimeout(() => {
+    setShifts((prev) =>
+      prev.map((shift) =>
+        shift.id === id
+          ? {
+              ...shift,
+              saved: false,
+            }
+          : shift
+      )
+    );
+  }, 3000);
   };
 
   const handleDeleteShift = async (id) => {
@@ -202,6 +214,7 @@ const SettingsPage = () => {
               isConnected ? "cursor-not-allowed opacity-80" : ""
             }`}
           >
+             <div className="grid grid-cols-1 sm:grid-cols-[2fr_2fr] gap-4 ">
             <div>
               <label className="text-[#0b2c6d] text-sm tracking-[2px] uppercase mb-2 block font-semibold">
                 Modbus IP
@@ -221,7 +234,7 @@ const SettingsPage = () => {
               />
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            {/* <div className="grid grid-cols-1 sm:grid-cols-2 gap-4"> */}
               <div>
                 <label className="text-[#0b2c6d] text-sm tracking-[2px] uppercase mb-2 block font-semibold">
                   Port
@@ -240,6 +253,8 @@ const SettingsPage = () => {
                   className="w-full h-[54px] rounded-2xl border border-[#cfd8e6] px-4 bg-[#f8fbff] text-[#0b2c6d] outline-none disabled:cursor-not-allowed disabled:bg-[#eef2f7]"
                 />
               </div>
+   </div>
+             <div className="grid grid-cols-1 sm:grid-cols-[2fr_2fr] gap-4 ">
 
               <div>
                 <label className="text-[#0b2c6d] text-sm tracking-[2px] uppercase mb-2 block font-semibold">
@@ -259,9 +274,9 @@ const SettingsPage = () => {
                   className="w-full h-[54px] rounded-2xl border border-[#cfd8e6] px-4 bg-[#f8fbff] text-[#0b2c6d] outline-none disabled:cursor-not-allowed disabled:bg-[#eef2f7]"
                 />
               </div>
-            </div>
+         
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            {/* <div className="grid grid-cols-1 sm:grid-cols-2 gap-4"> */}
               <div>
                 <label className="text-[#0b2c6d] text-sm tracking-[2px] uppercase mb-2 block font-semibold">
                   Modbus Data Fetch
@@ -285,8 +300,8 @@ const SettingsPage = () => {
                 </select>
               </div>
 
-          
-            </div>
+             </div>
+            {/* </div> */}
 
             <div className="flex justify-center pt-2">
               <button

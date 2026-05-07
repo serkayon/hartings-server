@@ -17,13 +17,24 @@ const RaisedCard = ({ children, className = "" }) => {
 };
 
 const Report = () => {
-  const today = new Date().toISOString().slice(0, 16);
+  const now = new Date();
+  const toLocalDate = (d) => {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${y}-${m}-${day}`;
+  };
+  const todayDate = toLocalDate(now);
+  const startAtEight = `${todayDate}T08:00`;
+  const nextDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  nextDate.setDate(nextDate.getDate() + 1);
+  const endAtEight = `${toLocalDate(nextDate)}T08:00`;
 
   const [mode, setMode] = useState("daily");
   const [filters, setFilters] = useState({
-    dateTime: today,
-    fromDateTime: today,
-    toDateTime: today,
+    dateTime: todayDate,
+    fromDateTime: startAtEight,
+    toDateTime: endAtEight,
     shift: "All",
   });
   const [reportData, setReportData] = useState(null);
@@ -62,6 +73,26 @@ const Report = () => {
       ...prev,
       [name]: value,
     }));
+  };
+
+  const formatDisplayRange = (value) => {
+    if (!value || typeof value !== "string" || !value.includes(" -> ")) {
+      return value;
+    }
+    const [startRaw, endRaw] = value.split(" -> ");
+    const formatOne = (raw) => {
+      const dt = new Date(raw);
+      if (Number.isNaN(dt.getTime())) return raw;
+      return dt.toLocaleString(undefined, {
+        year: "numeric",
+        month: "short",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: true,
+      });
+    };
+    return `${formatOne(startRaw)} to ${formatOne(endRaw)}`;
   };
 
   const handleApplyFilter = async () => {
@@ -120,7 +151,7 @@ const Report = () => {
             <div className="mt-5 grid grid-cols-1 gap-4">
               <div className="min-w-0">
                 <label className="mb-2 block text-sm font-semibold text-[#102a5c]">
-                  Date & Time
+                  Date
                 </label>
 
                 <div className="relative">
@@ -130,7 +161,7 @@ const Report = () => {
                   />
 
                   <input
-                    type="datetime-local"
+                    type="date"
                     name="dateTime"
                     value={filters.dateTime}
                     onChange={handleChange}
@@ -247,7 +278,7 @@ const Report = () => {
                 </div>
 
                 <div className="mt-1 break-words text-xs text-[#6d7b94] sm:text-sm">
-                  {reportData.selectedDate}
+                  {formatDisplayRange(reportData.selectedDate)}
                 </div>
 
                 <div className="mt-3 flex flex-wrap gap-2">

@@ -440,7 +440,7 @@ const MonitoringDashboard = () => {
             {/* X */}
             <div className="rounded-[12px] border border-[#dbe3ee] bg-[#eef2f7] px-2 py-2 flex flex-col justify-between">
 
-              <div className="text-[7px] uppercase tracking-[0.15em] text-[#6d7b94]">
+              <div className="text-[7px] uppercase tracking-[0.15em] text-[#6d7b94] font-extrabold">
                 X Axis
               </div>
 
@@ -456,7 +456,7 @@ const MonitoringDashboard = () => {
             {/* Y */}
             <div className="rounded-[12px] border border-[#dbe3ee] bg-[#eef2f7] px-2 py-2 flex flex-col justify-between">
 
-              <div className="text-[7px] uppercase tracking-[0.15em] text-[#6d7b94]">
+              <div className="text-[7px] uppercase tracking-[0.15em] text-[#6d7b94]  font-extrabold">
                 Y Axis
               </div>
 
@@ -472,7 +472,7 @@ const MonitoringDashboard = () => {
             {/* Z */}
             <div className="rounded-[12px] border border-[#dbe3ee] bg-[#eef2f7] px-2 py-2 flex flex-col justify-between">
 
-              <div className="text-[7px] uppercase tracking-[0.15em] text-[#6d7b94]">
+              <div className="text-[7px] uppercase tracking-[0.15em] text-[#6d7b94]  font-extrabold">
                 Z Axis
               </div>
 
@@ -499,7 +499,7 @@ const MonitoringDashboard = () => {
             <div className="px-5 py-5">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div>
-                  <div className="mt-1 text-2xl font-bold text-[#102a5c]">
+                  <div className=" text-2xl font-bold text-[#102a5c]">
                     {shiftCard.name}
                   </div>
                   <div className="text-[11px] uppercase tracking-[0.24em] text-[#6d7b94]">
@@ -624,7 +624,7 @@ const MonitoringDashboard = () => {
             Runtime
           </div>
 
-          <div className="mt-1 text-xl font-bold text-[#14923d]">
+          <div className="mt-2 text-xl font-bold text-[#14923d]">
             {consolidatedSummary.runtime}
           </div>
         </div>
@@ -687,7 +687,7 @@ const MonitoringDashboard = () => {
   </div>
 </RaisedCard>
            <RaisedCard className="w-full">
-  <div className="px-3 py-4 sm:px-5 sm:py-5 h-[305px]">
+  <div className="px-3 py-4 sm:px-5 sm:py-5 h-[297px]">
     
     {/* Header */}
     <div className="flex items-center justify-between gap-2 sm:gap-3">
@@ -702,7 +702,7 @@ const MonitoringDashboard = () => {
     </div>
 
     {/* Alarm Body */}
-    <div className="mt-4 rounded-[22px] sm:rounded-[28px] bg-[linear-gradient(180deg,#ffffff_0%,#fff6eb_100%)] px-4 py-4 sm:px-5 sm:py-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.9),0_10px_22px_rgba(15,23,42,0.06)]">
+    <div className="mt-3 rounded-[22px] sm:rounded-[28px] bg-[linear-gradient(180deg,#ffffff_0%,#fff6eb_100%)] px-4 py-4 sm:px-5 sm:py-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.9),0_10px_22px_rgba(15,23,42,0.06)]">
       
       {/* Top Section */}
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">

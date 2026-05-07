@@ -356,9 +356,15 @@ def _compute_report_summary(
     if mode == "custom":
         range_start = _to_aware(from_dt, now - timedelta(hours=8))
         range_end = _to_aware(to_dt, now)
+        if range_end <= range_start:
+            range_end = range_start + timedelta(days=1)
     else:
         anchor = _to_aware(date_time, now)
-        range_start, range_end = _production_day_window(anchor, shift_configs)
+        if date_time and len(date_time) <= 10:
+            range_start = datetime.combine(anchor.date(), time(0, 0), tzinfo=_plant_tz())
+            range_end = range_start + timedelta(days=1)
+        else:
+            range_start, range_end = _production_day_window(anchor, shift_configs)
 
     if range_end <= range_start:
         range_end = range_start + timedelta(minutes=1)
@@ -405,34 +411,62 @@ def _format_log_time(dt: datetime) -> str:
     return local_dt.strftime("%Y-%m-%d %H:%M:%S")
 
 
-def _build_report_logs(state: dict, range_start: datetime, range_end: datetime) -> dict[str, list[dict[str, Any]]]:
+def _report_log_windows(
+    shift_configs: list[dict[str, Any]],
+    shift: str,
+    range_start: datetime,
+    range_end: datetime,
+) -> list[tuple[datetime, datetime]]:
+    if shift == "All":
+        return [(range_start, range_end)]
+
+    target_shift = next((row for row in shift_configs if row["name"] == shift), None)
+    if not target_shift:
+        return [(range_start, range_end)]
+
+    windows: list[tuple[datetime, datetime]] = []
+    day = range_start.date() - timedelta(days=1)
+    while day <= range_end.date() + timedelta(days=1):
+        shift_start, shift_end = _shift_window_for_day(day, target_shift)
+        overlap_start = max(range_start, shift_start)
+        overlap_end = min(range_end, shift_end)
+        if overlap_end > overlap_start:
+            windows.append((overlap_start, overlap_end))
+        day += timedelta(days=1)
+    return windows
+
+
+def _build_report_logs(state: dict, shift: str, range_start: datetime, range_end: datetime) -> dict[str, list[dict[str, Any]]]:
     timeline = state.get("meta", {}).get("statusTimeline", [])
     machine = state.get("machine", {})
+    shift_configs = _iter_shift_configs(state)
+    windows = _report_log_windows(shift_configs, shift, range_start, range_end)
     rows: list[dict[str, Any]] = []
     for row in timeline[-400:]:
         seg_start = _to_aware(row.get("start"), range_start)
         seg_end = _to_aware(row.get("end"), range_start)
         if seg_end <= seg_start:
             continue
-        if seg_end <= range_start or seg_start >= range_end:
-            continue
+        for win_start, win_end in windows:
+            if seg_end <= win_start or seg_start >= win_end:
+                continue
 
-        overlap_start = max(seg_start, range_start)
-        overlap_end = min(seg_end, range_end)
-        duration_seconds = int(max(0, (overlap_end - overlap_start).total_seconds()))
-        rows.append(
-            {
-                "status": _coerce_status(row.get("status", "Running")),
-                "start": overlap_start,
-                "end": overlap_end,
-                "duration": _to_hhmmss(duration_seconds),
-                "parts": int(max(0, round(float(row.get("partsDelta", 0))))),
-                "program": (row.get("program") or "").strip() or machine.get("currentProgram", "PROGRAM-001"),
-                "alarmCode": row.get("alarmCode", machine.get("alarmCode", "-")) or "-",
-                "alarmMessage": row.get("alarmMessage", machine.get("alarmMessage", "No active alarm"))
-                or "No active alarm",
-            }
-        )
+            overlap_start = max(seg_start, win_start)
+            overlap_end = min(seg_end, win_end)
+            duration_seconds = int(max(0, (overlap_end - overlap_start).total_seconds()))
+            rows.append(
+                {
+                    "status": _coerce_status(row.get("status", "Running")),
+                    "start": overlap_start,
+                    "end": overlap_end,
+                    "duration": _to_hhmmss(duration_seconds),
+                    "parts": int(max(0, round(float(row.get("partsDelta", 0))))),
+                    "program": (row.get("program") or "").strip() or machine.get("currentProgram", "PROGRAM-001"),
+                    "alarmCode": row.get("alarmCode", machine.get("alarmCode", "-")) or "-",
+                    "alarmMessage": row.get("alarmMessage", machine.get("alarmMessage", "No active alarm"))
+                    or "No active alarm",
+                }
+            )
 
     rows.sort(key=lambda item: item["start"])
 
@@ -595,7 +629,14 @@ def _tick_machine(state: dict) -> None:
 
     if status == "Running":
         machine["cuttingTimeSeconds"] = int(machine.get("cuttingTimeSeconds", 0) + scaled_elapsed)
-        machine["totalParts"] = int(machine.get("totalParts", 0) + max(0.0, scaled_elapsed * machine.get("feedRate", 40) / 55.0))
+        interval_seconds = float(machine.get("partIntervalSeconds", 60) or 60)
+        interval_seconds = max(1.0, interval_seconds)
+        part_accumulator = float(meta.get("partAccumulatorSeconds", 0.0)) + scaled_elapsed
+        produced_parts = int(part_accumulator // interval_seconds)
+        if produced_parts > 0:
+            machine["totalParts"] = int(machine.get("totalParts", 0) + produced_parts)
+            part_accumulator -= produced_parts * interval_seconds
+        meta["partAccumulatorSeconds"] = part_accumulator
         machine["spindleSpeed"] = int(max(1200, min(5500, machine.get("spindleSpeed", 3200) + random.randint(-80, 110))))
         machine["feedRate"] = int(max(20, min(100, machine.get("feedRate", 40) + random.randint(-2, 3))))
         machine["cuttingStatus"] = "CUTTING"
@@ -796,7 +837,7 @@ def build_report_payload(state: dict, mode: str, shift: str, from_dt: str | None
     idle_pct = int(round((idle_seconds / total_seconds) * 100))
     breakdown_pct = max(0, 100 - runtime_pct - idle_pct)
 
-    logs = _build_report_logs(state, report_data["rangeStart"], report_data["rangeEnd"])
+    logs = _build_report_logs(state, shift, report_data["rangeStart"], report_data["rangeEnd"])
 
     return {
         "runtime": _to_hhmmss(runtime_seconds),

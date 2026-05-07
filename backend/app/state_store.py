@@ -46,6 +46,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             feed_rate INTEGER,
             feed_output INTEGER,
             feed_override INTEGER,
+            part_interval_seconds INTEGER,
             alarm_active INTEGER,
             alarm_code TEXT,
             alarm_message TEXT,
@@ -91,6 +92,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             sim_clock_mode TEXT NOT NULL DEFAULT 'auto',
             manual_shift_name TEXT NOT NULL DEFAULT 'Shift A',
             sim_clock_cursor TEXT,
+            part_accumulator_seconds REAL NOT NULL DEFAULT 0.0,
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
 
@@ -107,6 +109,12 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         );
         """
     )
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(machine_state)").fetchall()}
+    if "part_interval_seconds" not in cols:
+        conn.execute("ALTER TABLE machine_state ADD COLUMN part_interval_seconds INTEGER")
+    meta_cols = {row["name"] for row in conn.execute("PRAGMA table_info(meta)").fetchall()}
+    if "part_accumulator_seconds" not in meta_cols:
+        conn.execute("ALTER TABLE meta ADD COLUMN part_accumulator_seconds REAL NOT NULL DEFAULT 0.0")
     conn.commit()
 
 
@@ -117,10 +125,10 @@ def _upsert_machine(conn: sqlite3.Connection, machine: dict) -> None:
         INSERT INTO machine_state (
             id, machine_status, controller_mode, current_program, current_tool, total_parts,
             cutting_status, coord_x, coord_y, coord_z, spindle_speed, feed_rate, feed_output,
-            feed_override, alarm_active, alarm_code, alarm_message, alarm_time, cutting_time_seconds,
+            feed_override, part_interval_seconds, alarm_active, alarm_code, alarm_message, alarm_time, cutting_time_seconds,
             idle_time_seconds, breakdown_time_seconds, updated_at
         ) VALUES (
-            1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now')
+            1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now')
         )
         ON CONFLICT(id) DO UPDATE SET
             machine_status = excluded.machine_status,
@@ -136,6 +144,7 @@ def _upsert_machine(conn: sqlite3.Connection, machine: dict) -> None:
             feed_rate = excluded.feed_rate,
             feed_output = excluded.feed_output,
             feed_override = excluded.feed_override,
+            part_interval_seconds = excluded.part_interval_seconds,
             alarm_active = excluded.alarm_active,
             alarm_code = excluded.alarm_code,
             alarm_message = excluded.alarm_message,
@@ -159,6 +168,7 @@ def _upsert_machine(conn: sqlite3.Connection, machine: dict) -> None:
             int(machine.get("feedRate", 0)),
             int(machine.get("feedOutput", 0)),
             int(machine.get("feedOverride", 0)),
+            int(machine.get("partIntervalSeconds", 60) or 60),
             1 if bool(machine.get("alarmActive", False)) else 0,
             machine.get("alarmCode", "-"),
             machine.get("alarmMessage", "No active alarm"),
@@ -230,14 +240,15 @@ def _upsert_settings(conn: sqlite3.Connection, settings: dict) -> None:
 def _upsert_meta(conn: sqlite3.Connection, meta: dict) -> None:
     conn.execute(
         """
-        INSERT INTO meta (id, last_tick, sim_speed, sim_clock_mode, manual_shift_name, sim_clock_cursor, updated_at)
-        VALUES (1, ?, ?, ?, ?, ?, datetime('now'))
+        INSERT INTO meta (id, last_tick, sim_speed, sim_clock_mode, manual_shift_name, sim_clock_cursor, part_accumulator_seconds, updated_at)
+        VALUES (1, ?, ?, ?, ?, ?, ?, datetime('now'))
         ON CONFLICT(id) DO UPDATE SET
             last_tick = excluded.last_tick,
             sim_speed = excluded.sim_speed,
             sim_clock_mode = excluded.sim_clock_mode,
             manual_shift_name = excluded.manual_shift_name,
             sim_clock_cursor = excluded.sim_clock_cursor,
+            part_accumulator_seconds = excluded.part_accumulator_seconds,
             updated_at = excluded.updated_at
         """,
         (
@@ -246,6 +257,7 @@ def _upsert_meta(conn: sqlite3.Connection, meta: dict) -> None:
             str(meta.get("simClockMode", "auto")),
             str(meta.get("manualShiftName", "Shift A")),
             meta.get("simClockCursor"),
+            float(meta.get("partAccumulatorSeconds", 0.0) or 0.0),
         ),
     )
 
@@ -305,6 +317,7 @@ def _hydrate_state(conn: sqlite3.Connection) -> dict:
                 "feedRate": int(machine_row["feed_rate"] or 0),
                 "feedOutput": int(machine_row["feed_output"] or 0),
                 "feedOverride": int(machine_row["feed_override"] or 0),
+                "partIntervalSeconds": int(machine_row["part_interval_seconds"] or 60),
                 "alarmActive": bool(machine_row["alarm_active"] or 0),
                 "alarmCode": machine_row["alarm_code"] or "-",
                 "alarmMessage": machine_row["alarm_message"] or "No active alarm",
@@ -363,6 +376,7 @@ def _hydrate_state(conn: sqlite3.Connection) -> dict:
                 "simClockMode": meta_row["sim_clock_mode"] or "auto",
                 "manualShiftName": meta_row["manual_shift_name"] or "Shift A",
                 "simClockCursor": meta_row["sim_clock_cursor"] or state["meta"]["simClockCursor"],
+                "partAccumulatorSeconds": float(meta_row["part_accumulator_seconds"] or 0.0),
             }
         )
 

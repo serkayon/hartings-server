@@ -18,6 +18,7 @@ def initial_state() -> dict:
             "feedRate": 42,
             "feedOutput": 900,
             "feedOverride": 95,
+            "partIntervalSeconds": 60,
             "alarmActive": False,
             "alarmCode": "-",
             "alarmMessage": "No active alarm",
@@ -79,5 +80,6 @@ def initial_state() -> dict:
             "simClockMode": "auto",
             "manualShiftName": "Shift A",
             "simClockCursor": now,
+            "partAccumulatorSeconds": 0.0,
         },
     }

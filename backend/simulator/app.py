@@ -34,6 +34,7 @@ class MachinePatch(BaseModel):
     feedRate: int | None = None
     feedOutput: int | None = None
     feedOverride: int | None = None
+    partIntervalSeconds: int | None = None
     alarmActive: bool | None = None
     alarmCode: str | None = None
     alarmMessage: str | None = None
@@ -61,6 +62,7 @@ def _fresh_state() -> dict[str, Any]:
             "feedRate": 40,
             "feedOutput": 800,
             "feedOverride": 100,
+            "partIntervalSeconds": 60,
             "alarmActive": False,
             "alarmCode": "-",
             "alarmMessage": "No active alarm",
@@ -283,6 +285,13 @@ def simulator_ui() -> str:
             <input id=\"spindleSpeed\" type=\"number\" min=\"0\" max=\"6000\" onchange=\"applyManual()\" />
           </div>
         </div>
+        <div class=\"grid\" style=\"margin-top:12px\">
+          <div>
+            <label>Seconds Per Part</label>
+            <input id=\"partIntervalSeconds\" type=\"number\" min=\"1\" step=\"1\" value=\"60\" onchange=\"applyManual()\" />
+          </div>
+          <div></div>
+        </div>
 
         <div class=\"grid\" style=\"margin-top:12px\">
           <div>
@@ -414,6 +423,7 @@ function readBasePayload() {
     currentTool: currentTool.value,
     totalParts: Number(totalParts.value || 0),
     spindleSpeed: Number(spindleSpeed.value || 0),
+    partIntervalSeconds: Number(partIntervalSeconds.value || 60),
     coordinates: {
       x: Number(x.value || 0),
       y: Number(y.value || 0),
@@ -475,7 +485,6 @@ function generateLivePatch() {
     base.feedRate = randomInt(35, 95);
     base.feedOutput = base.feedRate * randomInt(16, 22);
     base.feedOverride = randomInt(90, 110);
-    base.totalParts += randomInt(1, 3);
     base.coordinates.x = jitter(base.coordinates.x, 0.25);
     base.coordinates.y = jitter(base.coordinates.y, 0.25);
     base.coordinates.z = jitter(base.coordinates.z, 0.12);
@@ -496,7 +505,6 @@ function generateLivePatch() {
 
   applyAlarmToPayload(base, new Date().toLocaleTimeString('en-GB', {hour12: false}));
 
-  totalParts.value = base.totalParts;
   spindleSpeed.value = base.spindleSpeed;
   return base;
 }
@@ -509,6 +517,7 @@ async function applyManual() {
 
 async function simulateTick() {
   const patch = generateLivePatch();
+  delete patch.totalParts;
   await patchMachine(patch);
   syncRange('x');
   syncRange('y');
@@ -556,6 +565,7 @@ async function loadState() {
   currentTool.value = m.currentTool || TOOLS[0];
   totalParts.value = m.totalParts || 0;
   spindleSpeed.value = m.spindleSpeed || 0;
+  partIntervalSeconds.value = m.partIntervalSeconds || 60;
   alarmState.value = m.alarmActive ? 'on' : 'off';
   const knownAlarm = ALARM_PROFILES.some(a => a.code === m.alarmCode) ? m.alarmCode : ALARM_PROFILES[0].code;
   alarmCodeSelect.value = knownAlarm;
