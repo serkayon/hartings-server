@@ -16,6 +16,36 @@ const RaisedCard = ({ children, className = "" }) => {
   );
 };
 
+const SHIFT_DURATION_SECONDS = 8 * 60 * 60;
+const clamp = (value) => Math.max(0, Math.min(100, value));
+
+const parseDurationToSeconds = (value) => {
+  const parts = String(value || "00:00:00").split(":").map(Number);
+  if (parts.length !== 3 || parts.some(Number.isNaN)) {
+    return 0;
+  }
+  const [hours, minutes, seconds] = parts;
+  return hours * 3600 + minutes * 60 + seconds;
+};
+
+const buildShiftPercentages = (runtime, idle, breakdown) => {
+  const runtimeSeconds = parseDurationToSeconds(runtime);
+  const idleSeconds = parseDurationToSeconds(idle);
+  const breakdownSeconds = parseDurationToSeconds(breakdown);
+  const usedSeconds = Math.min(
+    SHIFT_DURATION_SECONDS,
+    runtimeSeconds + idleSeconds + breakdownSeconds,
+  );
+  const remainingSeconds = Math.max(SHIFT_DURATION_SECONDS - usedSeconds, 0);
+
+  return {
+    runtimePercentage: clamp((runtimeSeconds / SHIFT_DURATION_SECONDS) * 100),
+    breakdownPercentage: clamp((breakdownSeconds / SHIFT_DURATION_SECONDS) * 100),
+    idlePercentage: clamp((idleSeconds / SHIFT_DURATION_SECONDS) * 100),
+    remainingPercentage: clamp((remainingSeconds / SHIFT_DURATION_SECONDS) * 100),
+  };
+};
+
 const Report = () => {
   const now = new Date();
   const toLocalDate = (d) => {
@@ -98,6 +128,10 @@ const Report = () => {
   const handleApplyFilter = async () => {
     fetchReportData();
   };
+
+  const reportProgress = reportData
+    ? buildShiftPercentages(reportData.runtime, reportData.idle, reportData.breakdown)
+    : null;
 
   return (
     <div className="min-h-screen w-full overflow-x-hidden bg-[#f4f7fb] p-2 sm:p-4 lg:p-6">
@@ -293,21 +327,28 @@ const Report = () => {
                   <div
                     className="bg-[#1ba34a]"
                     style={{
-                      width: `${reportData.runtimePercentage}%`,
-                    }}
-                  />
-
-                  <div
-                    className="bg-[#cbd5e1]"
-                    style={{
-                      width: `${reportData.idlePercentage}%`,
+                      width: `${reportProgress?.runtimePercentage || 0}%`,
                     }}
                   />
 
                   <div
                     className="bg-[#ef4444]"
                     style={{
-                      width: `${reportData.breakdownPercentage}%`,
+                      width: `${reportProgress?.breakdownPercentage || 0}%`,
+                    }}
+                  />
+
+                  <div
+                    className="bg-[#6082B6]"
+                    style={{
+                      width: `${reportProgress?.idlePercentage || 0}%`,
+                    }}
+                  />
+
+                  <div
+                    className="bg-[#DFE5EE]"
+                    style={{
+                      width: `${reportProgress?.remainingPercentage || 0}%`,
                     }}
                   />
                 </div>
@@ -323,16 +364,6 @@ const Report = () => {
                     </div>
                   </div>
 
-                  <div className="rounded-[18px] bg-[#f1f5f9] p-4">
-                    <div className="text-[10px] uppercase tracking-[0.18em] text-[#64748b]">
-                      Idle Time
-                    </div>
-
-                    <div className="mt-2 text-xl font-bold text-[#475569] sm:text-2xl">
-                      {reportData.idle}
-                    </div>
-                  </div>
-
                   <div className="rounded-[18px] bg-[#fef0f0] p-4">
                     <div className="text-[10px] uppercase tracking-[0.18em] text-[#dc2626]">
                       Breakdown
@@ -342,8 +373,21 @@ const Report = () => {
                       {reportData.breakdown}
                     </div>
                   </div>
+
+                  <div className="rounded-[18px] bg-[#f1f5f9] p-4">
+                    <div className="text-[10px] uppercase tracking-[0.18em] text-[#64748b]">
+                      Idle Time
+                    </div>
+
+                    <div className="mt-2 text-xl font-bold text-[#475569] sm:text-2xl">
+                      {reportData.idle}
+                    </div>
+                  </div>
+                  
                 </div>
               </div>
+
+              
 
               <div className="mt-5 grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <div className="rounded-[18px] bg-[#eef2f7] p-4">

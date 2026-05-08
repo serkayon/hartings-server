@@ -76,6 +76,36 @@ const parseDurationToSeconds = (value) => {
 };
 
 const clamp = (value) => Math.max(0, Math.min(100, value));
+const SHIFT_DURATION_SECONDS = 8 * 60 * 60;
+const DAY_DURATION_SECONDS = 24 * 60 * 60;
+
+const formatSecondsToDuration = (seconds) => {
+  const safeSeconds = Math.max(0, Math.floor(seconds));
+  const hours = String(Math.floor(safeSeconds / 3600)).padStart(2, "0");
+  const minutes = String(Math.floor((safeSeconds % 3600) / 60)).padStart(2, "0");
+  const secs = String(safeSeconds % 60).padStart(2, "0");
+  return `${hours}:${minutes}:${secs}`;
+};
+
+const withTimeProgress = (summary = {}, totalDurationSeconds = SHIFT_DURATION_SECONDS) => {
+  const runtimeSeconds = parseDurationToSeconds(summary.runtime || "00:00:00");
+  const breakdownSeconds = parseDurationToSeconds(summary.breakdown || "00:00:00");
+  const idleSeconds = parseDurationToSeconds(summary.idle || "00:00:00");
+  const accountedSeconds = Math.min(
+    totalDurationSeconds,
+    runtimeSeconds + breakdownSeconds + idleSeconds,
+  );
+  const remainingSeconds = Math.max(totalDurationSeconds - accountedSeconds, 0);
+
+  return {
+    ...summary,
+    remainingTime: formatSecondsToDuration(remainingSeconds),
+    runtimePercentage: clamp((runtimeSeconds / totalDurationSeconds) * 100),
+    breakdownPercentage: clamp((breakdownSeconds / totalDurationSeconds) * 100),
+    idlePercentage: clamp((idleSeconds / totalDurationSeconds) * 100),
+    remainingPercentage: clamp((remainingSeconds / totalDurationSeconds) * 100),
+  };
+};
 
 const outerCardClass =
   "rounded-[30px] bg-[#d9dee8] p-[2px] shadow-[0_20px_40px_rgba(15,23,42,0.14),0_8px_14px_rgba(15,23,42,0.08)]";
@@ -229,12 +259,22 @@ const MonitoringDashboard = () => {
 
   const latestSpindleLoad = spindleSeries.at(-1)?.load ?? 0;
   const spindleCapacity = Math.round((dashboardData.spindleSpeed / 6000) * 100);
-  const cuttingSeconds = parseDurationToSeconds(dashboardData.cuttingTime);
-  const idleSeconds = parseDurationToSeconds(dashboardData.idleTime);
-  const totalSeconds = cuttingSeconds + idleSeconds;
-  const utilization =
-    totalSeconds > 0 ? Math.round((cuttingSeconds / totalSeconds) * 100) : 0;
-
+  const machineStatusText = String(dashboardData.machineStatus || "").toLowerCase();
+  const isBreakdownStatus =
+    machineStatusText.includes("breakdown") ||
+    machineStatusText.includes("alarm") ||
+    machineStatusText.includes("down");
+  const isIdleStatus = machineStatusText.includes("idle");
+  const machineStatusColor = isBreakdownStatus
+    ? "#EF4444"
+    : isIdleStatus
+      ? "#6082B6"
+      : "#1BA34A";
+  const machineStatusLabel = isBreakdownStatus
+    ? "Breakdown condition"
+    : isIdleStatus
+      ? "Idle condition"
+      : "Running condition";
   const productionStrip = useMemo(
     () => [
       {
@@ -266,7 +306,7 @@ const MonitoringDashboard = () => {
     ],
   );
 
-  const shiftSummaries =
+  const shiftSummariesRaw =
     Array.isArray(dashboardData.shiftSummaries) &&
     dashboardData.shiftSummaries.length > 0
       ? dashboardData.shiftSummaries
@@ -279,8 +319,8 @@ const MonitoringDashboard = () => {
             idle: dashboardData.idleTime,
             breakdown: dashboardData.breakdownTime || "00:00:00",
             remainingTime: "00:00:00",
-            runtimePercentage: utilization,
-            idlePercentage: clamp(100 - utilization),
+            runtimePercentage: 0,
+            idlePercentage: 0,
             breakdownPercentage: 0,
             parts: dashboardData.totalParts,
             power: `${Math.max(1, Math.round(dashboardData.spindleSpeed / 1000))} kWh`,
@@ -315,7 +355,11 @@ const MonitoringDashboard = () => {
           },
         ];
 
-  const consolidatedSummary = dashboardData.consolidatedSummary || {
+  const shiftSummaries = shiftSummariesRaw.map((summary) =>
+    withTimeProgress(summary, SHIFT_DURATION_SECONDS),
+  );
+
+  const consolidatedSummaryRaw = dashboardData.consolidatedSummary || {
     name: "Per Day",
     start: "00:00",
     end: "24:00",
@@ -323,12 +367,16 @@ const MonitoringDashboard = () => {
     runtime: dashboardData.cuttingTime,
     idle: dashboardData.idleTime,
     breakdown: dashboardData.breakdownTime || "00:00:00",
-    runtimePercentage: utilization,
-    idlePercentage: clamp(100 - utilization),
+    runtimePercentage: 0,
+    idlePercentage: 0,
     breakdownPercentage: 0,
     parts: dashboardData.totalParts,
     power: `${Math.max(1, Math.round(dashboardData.spindleSpeed / 1000))} kWh`,
   };
+  const consolidatedSummary = withTimeProgress(
+    consolidatedSummaryRaw,
+    DAY_DURATION_SECONDS,
+  );
 
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_top,_#ffffff_0%,_#f4f5f8_42%,_#eceef2_100%)] px-2 py-3 text-[#12284c] sm:px-3">
@@ -356,15 +404,21 @@ const MonitoringDashboard = () => {
 
           <div className="mt-2 flex items-center gap-2">
 
-            <div className="h-2.5 w-2.5 rounded-full bg-[#1bb34a] shadow-[0_0_6px_rgba(34,197,94,0.5)]" />
+            <div
+              className="h-2.5 w-2.5 rounded-full shadow-[0_0_6px_rgba(15,23,42,0.22)]"
+              style={{ backgroundColor: machineStatusColor }}
+            />
 
-            <div className="text-xl md:text-[24px] font-bold text-[#14923d]">
+            <div
+              className="text-xl md:text-[24px] font-bold"
+              style={{ color: machineStatusColor }}
+            >
               {dashboardData.machineStatus}
             </div>
           </div>
 
-          <div className="mt-1.5 text-[11px] text-[#7b879b]">
-            Running condition
+          <div className="mt-1.5 text-[11px]" style={{ color: machineStatusColor }}>
+            {machineStatusLabel}
           </div>
 
         </div>
@@ -518,42 +572,47 @@ const MonitoringDashboard = () => {
                     style={{ width: `${shiftCard.runtimePercentage}%` }}
                   />
                   <div
-                    className="bg-[#cbd5e1]"
+                    className="bg-[#ef4444]"
+                    style={{ width: `${shiftCard.breakdownPercentage}%` }}
+                  />
+                  <div
+                    className="bg-[#6082B6]"
                     style={{ width: `${shiftCard.idlePercentage}%` }}
                   />
                   <div
-                    className="bg-[#ef4444]"
-                    style={{ width: `${shiftCard.breakdownPercentage}%` }}
+                    className="bg-[#DFE5EE]"
+                    style={{ width: `${shiftCard.remainingPercentage || 0}%` }}
                   />
                 </div>
 
                 <div className="mt-4 grid grid-cols-3 gap-3">
                   <div className="rounded-[18px] bg-[#edf9f0] px-3 py-3">
-                    <div className="text-[10px] uppercase tracking-[0.18em] text-[#3c7a50]">
+                    <div className="text-[10px] uppercase tracking-[0.18em] text-[#1BA34A]">
                       Runtime
                     </div>
-                    <div className="mt-2 text-lg font-bold text-[#14923d]">
+                    <div className="mt-2 text-lg font-bold text-[#1BA34A]">
                       {shiftCard.runtime}
                     </div>
                   </div>
 
+                  <div className="rounded-[18px] bg-[#fef0f0] px-3 py-3">
+                    <div className="text-[10px] uppercase tracking-[0.18em] text-[#EF4444]">
+                      Breakdown
+                    </div>
+                    <div className="mt-2 text-lg font-bold text-[#EF4444]">
+                      {shiftCard.breakdown}
+                    </div>
+                  </div>
+
                   <div className="rounded-[18px] bg-[#f1f5f9] px-3 py-3">
-                    <div className="text-[10px] uppercase tracking-[0.18em] text-[#64748b]">
+                    <div className="text-[10px] uppercase tracking-[0.18em] text-[#6082B6]">
                       Idle Time
                     </div>
-                    <div className="mt-2 text-lg font-bold text-[#475569]">
+                    <div className="mt-2 text-lg font-bold text-[#6082B6]">
                       {shiftCard.idle}
                     </div>
                   </div>
 
-                  <div className="rounded-[18px] bg-[#fef0f0] px-3 py-3">
-                    <div className="text-[10px] uppercase tracking-[0.18em] text-[#dc2626]">
-                      Breakdown
-                    </div>
-                    <div className="mt-2 text-lg font-bold text-[#dc2626]">
-                      {shiftCard.breakdown}
-                    </div>
-                  </div>
                 </div>
               </div>
 
@@ -610,8 +669,9 @@ const MonitoringDashboard = () => {
 
       <div className="flex overflow-hidden rounded-full h-4 bg-[#dfe5ee]">
         <div className="bg-[#1ba34a]" style={{ width: `${consolidatedSummary.runtimePercentage}%` }} />
-        <div className="bg-[#cbd5e1]" style={{ width: `${consolidatedSummary.idlePercentage}%` }} />
         <div className="bg-[#ef4444]" style={{ width: `${consolidatedSummary.breakdownPercentage}%` }} />
+        <div className="bg-[#6082B6]" style={{ width: `${consolidatedSummary.idlePercentage}%` }} />
+        <div className="bg-[#DFE5EE]" style={{ width: `${consolidatedSummary.remainingPercentage || 0}%` }} />
       </div>
 
       {/* STATUS CARDS */}
@@ -620,36 +680,36 @@ const MonitoringDashboard = () => {
         {/* Runtime */}
         <div className="rounded-[18px] bg-[#edf9f0] px-4 py-3">
           
-          <div className="text-[10px] uppercase tracking-[0.18em] text-[#3c7a50]">
+          <div className="text-[10px] uppercase tracking-[0.18em] text-[#1BA34A]">
             Runtime
           </div>
 
-          <div className="mt-2 text-xl font-bold text-[#14923d]">
+          <div className="mt-2 text-xl font-bold text-[#1BA34A]">
             {consolidatedSummary.runtime}
-          </div>
-        </div>
-
-        {/* Idle */}
-        <div className="rounded-[18px] bg-[#f1f5f9] px-4 py-3">
-          
-          <div className="text-[10px] uppercase tracking-[0.18em] text-[#64748b]">
-            Idle Time
-          </div>
-
-          <div className="mt-2 text-xl font-bold text-[#475569]">
-            {consolidatedSummary.idle}
           </div>
         </div>
 
         {/* Breakdown */}
         <div className="rounded-[18px] bg-[#fef0f0] px-4 py-3">
           
-          <div className="text-[10px] uppercase tracking-[0.18em] text-[#dc2626]">
+          <div className="text-[10px] uppercase tracking-[0.18em] text-[#EF4444]">
             Breakdown
           </div>
 
-          <div className="mt-2 text-xl font-bold text-[#dc2626]">
+          <div className="mt-2 text-xl font-bold text-[#EF4444]">
             {consolidatedSummary.breakdown}
+          </div>
+        </div>
+
+        {/* Idle */}
+        <div className="rounded-[18px] bg-[#f1f5f9] px-4 py-3">
+          
+          <div className="text-[10px] uppercase tracking-[0.18em] text-[#6082B6]">
+            Idle Time
+          </div>
+
+          <div className="mt-2 text-xl font-bold text-[#6082B6]">
+            {consolidatedSummary.idle}
           </div>
         </div>
 

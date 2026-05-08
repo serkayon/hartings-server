@@ -37,7 +37,7 @@ _POLL_STOP = threading.Event()
 
 
 def _simulator_state_url() -> str:
-    return os.getenv("SIMULATOR_STATE_URL", "http://127.0.0.1:8001/state")
+    return os.getenv("SIMULATOR_STATE_URL", "http://127.0.0.1:5050/state")
 
 
 def _pull_simulator_state() -> dict | None:
