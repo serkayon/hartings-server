@@ -17,6 +17,7 @@ const SettingsPage = () => {
     fetchRate: "5s",
     graphRate: "10s",
   });
+  const [showSavedMessage, setShowSavedMessage] = useState(null);
   const [shifts, setShifts] = useState([
     {
       id: 1,
@@ -124,20 +125,14 @@ const SettingsPage = () => {
         : shift
     );
 
-    setShifts(nextShifts);
-    await persistShifts(nextShifts);
-     setTimeout(() => {
-    setShifts((prev) =>
-      prev.map((shift) =>
-        shift.id === id
-          ? {
-              ...shift,
-              saved: false,
-            }
-          : shift
-      )
-    );
-  }, 3000);
+ setShifts(nextShifts);
+await persistShifts(nextShifts);
+
+setShowSavedMessage(id);
+
+setTimeout(() => {
+  setShowSavedMessage(null);
+}, 3000);
   };
 
   const handleDeleteShift = async (id) => {
@@ -433,7 +428,7 @@ const SettingsPage = () => {
                   </div>
                 </div>
 
-                {shift.saved && (
+             {showSavedMessage === shift.id && (
                   <div className="mt-4 bg-green-50 border border-green-200 rounded-2xl p-3 flex items-center gap-2 text-green-700">
                     <Check size={18} />
                     Shift timing saved successfully

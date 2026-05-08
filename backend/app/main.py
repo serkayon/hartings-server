@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+from copy import deepcopy
 from typing import Optional
 from urllib.error import URLError
 from urllib.request import urlopen
@@ -34,6 +35,8 @@ except ImportError:
 app = FastAPI(title="Hartings Live Demo API", version="1.0.0")
 _POLL_THREAD: threading.Thread | None = None
 _POLL_STOP = threading.Event()
+_STATE_CACHE: dict | None = None
+_STATE_CACHE_LOCK = threading.Lock()
 
 
 def _simulator_state_url() -> str:
@@ -67,14 +70,31 @@ def _merge_simulator_into_state(state: dict, sim_state: dict) -> None:
 
 
 def _poll_loop() -> None:
+    global _STATE_CACHE
+    state = load_state(include_timeline=True)
+    with _STATE_CACHE_LOCK:
+        _STATE_CACHE = deepcopy(state)
+    cycle_count = 0
     while not _POLL_STOP.is_set():
-        state = load_state()
+        cycle_count += 1
+        if cycle_count % 30 == 0:
+            # Periodically refresh in-memory snapshot to pick up settings updates made by API calls.
+            state = load_state(include_timeline=True)
         sim_state = _pull_simulator_state()
         if sim_state:
             _merge_simulator_into_state(state, sim_state)
         tick(state)
         save_state(state)
+        with _STATE_CACHE_LOCK:
+            _STATE_CACHE = deepcopy(state)
         _POLL_STOP.wait(1.0)
+
+
+def _get_state_snapshot(include_timeline: bool = True) -> dict:
+    with _STATE_CACHE_LOCK:
+        if _STATE_CACHE is not None:
+            return deepcopy(_STATE_CACHE)
+    return load_state(include_timeline=include_timeline)
 
 
 app.add_middleware(
@@ -98,13 +118,13 @@ def health() -> dict:
 
 @app.get("/api/dashboard", response_model=DashboardResponse)
 def dashboard() -> dict:
-    state = load_state()
+    state = _get_state_snapshot(include_timeline=True)
     return build_dashboard_payload(state)
 
 
 @app.get("/api/analytics")
 def analytics() -> dict:
-    state = load_state()
+    state = _get_state_snapshot(include_timeline=True)
     return build_analytics_payload(state)
 
 
@@ -116,7 +136,7 @@ def report(
     fromDateTime: Optional[str] = None,
     toDateTime: Optional[str] = None,
 ) -> dict:
-    state = load_state()
+    state = _get_state_snapshot(include_timeline=True)
     return build_report_payload(
         state=state,
         mode=mode,
@@ -129,45 +149,60 @@ def report(
 
 @app.get("/api/settings", response_model=SettingsResponse)
 def get_settings() -> dict:
-    state = load_state()
+    state = _get_state_snapshot(include_timeline=False)
     return state["settings"]
 
 
 @app.put("/api/settings/modbus", response_model=SettingsResponse)
 def update_modbus(payload: UpdateModbusRequest) -> dict:
-    state = load_state()
+    global _STATE_CACHE
+    state = _get_state_snapshot(include_timeline=True)
     state["settings"]["modbusSettings"] = payload.modbusSettings.model_dump()
     save_state(state)
+    with _STATE_CACHE_LOCK:
+        _STATE_CACHE = deepcopy(state)
     return state["settings"]
 
 
 @app.put("/api/settings/shifts", response_model=SettingsResponse)
 def update_shifts(payload: UpdateShiftsRequest) -> dict:
-    state = load_state()
+    global _STATE_CACHE
+    state = _get_state_snapshot(include_timeline=True)
     state["settings"]["shifts"] = [shift.model_dump() for shift in payload.shifts]
     save_state(state)
+    with _STATE_CACHE_LOCK:
+        _STATE_CACHE = deepcopy(state)
     return state["settings"]
 
 
 @app.post("/api/settings/connect", response_model=ConnectionResponse)
 def connect() -> dict:
-    state = load_state()
+    global _STATE_CACHE
+    state = _get_state_snapshot(include_timeline=True)
     state["settings"]["isConnected"] = True
     save_state(state)
+    with _STATE_CACHE_LOCK:
+        _STATE_CACHE = deepcopy(state)
     return {"isConnected": True}
 
 
 @app.post("/api/settings/reconnect", response_model=ConnectionResponse)
 def reconnect() -> dict:
-    state = load_state()
+    global _STATE_CACHE
+    state = _get_state_snapshot(include_timeline=True)
     state["settings"]["isConnected"] = False
     save_state(state)
+    with _STATE_CACHE_LOCK:
+        _STATE_CACHE = deepcopy(state)
     return {"isConnected": False}
 
 
 @app.post("/api/reset")
 def reset() -> dict:
+    global _STATE_CACHE
     reset_state()
+    with _STATE_CACHE_LOCK:
+        _STATE_CACHE = load_state(include_timeline=True)
     return {"ok": True}
 
 

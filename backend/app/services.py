@@ -6,6 +6,13 @@ from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
+try:
+    from .state_store import fetch_alarm_logs, fetch_cycle_logs, fetch_machine_state_logs
+except ImportError:
+    from state_store import fetch_alarm_logs, fetch_cycle_logs, fetch_machine_state_logs
+
+TIMELINE_RETENTION_DAYS = int(os.getenv("LIVE_LOG_RETENTION_DAYS", "31"))
+
 
 def _plant_tz():
     tz_name = os.getenv("PLANT_TZ", "Asia/Kolkata")
@@ -93,13 +100,15 @@ def _shift_window_for_day(anchor_day: date, shift_cfg: dict[str, Any]) -> tuple[
 
 
 def _production_day_window(now: datetime, shift_configs: list[dict[str, Any]]) -> tuple[datetime, datetime]:
+    plant_tz = _plant_tz()
+    local_now = now.astimezone(plant_tz) if now.tzinfo else now.replace(tzinfo=plant_tz)
     if shift_configs:
         day_start_time = shift_configs[0]["start"]
     else:
         day_start_time = time(8, 0)
 
-    day_start = datetime.combine(now.date(), day_start_time, tzinfo=now.tzinfo or _plant_tz())
-    if now < day_start:
+    day_start = datetime.combine(local_now.date(), day_start_time, tzinfo=plant_tz)
+    if local_now < day_start:
         day_start -= timedelta(days=1)
     return day_start, day_start + timedelta(days=1)
 
@@ -125,8 +134,8 @@ def _resolve_effective_now(state: dict, fallback_now: datetime | None = None) ->
     meta = state.get("meta", {})
     if meta.get("simClockMode") == "manual_shift":
         cursor = _to_aware(meta.get("simClockCursor"), now)
-        return cursor
-    return now
+        return cursor.astimezone(_plant_tz())
+    return now.astimezone(_plant_tz()) if now.tzinfo else now.replace(tzinfo=_plant_tz())
 
 
 def _resolve_timeline_window(state: dict, real_now: datetime, elapsed_seconds: float) -> tuple[datetime, datetime]:
@@ -203,7 +212,7 @@ def _record_timeline(
         }
     )
 
-    cutoff = end - timedelta(days=8)
+    cutoff = end - timedelta(days=TIMELINE_RETENTION_DAYS)
     trimmed = []
     for row in timeline[-600000:]:
         row_end = _to_aware(row.get("end"), cutoff)
@@ -300,7 +309,7 @@ def _build_shift_summaries(state: dict, reference_dt: datetime | None = None) ->
     machine = state["machine"]
     meta = state.get("meta", {})
     timeline = meta.get("statusTimeline", [])
-    now = reference_dt or datetime.now(timezone.utc)
+    now = (reference_dt or datetime.now(_plant_tz())).astimezone(_plant_tz())
 
     shift_configs = _iter_shift_configs(state)
     production_start, production_end = _production_day_window(now, shift_configs)
@@ -437,174 +446,104 @@ def _report_log_windows(
 
 
 def _build_report_logs(state: dict, shift: str, range_start: datetime, range_end: datetime) -> dict[str, list[dict[str, Any]]]:
-    timeline = state.get("meta", {}).get("statusTimeline", [])
-    machine = state.get("machine", {})
     shift_configs = _iter_shift_configs(state)
     windows = _report_log_windows(shift_configs, shift, range_start, range_end)
-    rows: list[dict[str, Any]] = []
-    for row in timeline[-400:]:
-        seg_start = _to_aware(row.get("start"), range_start)
-        seg_end = _to_aware(row.get("end"), range_start)
-        if seg_end <= seg_start:
-            continue
+
+    def _in_windows(dt: datetime) -> bool:
         for win_start, win_end in windows:
-            if seg_end <= win_start or seg_start >= win_end:
-                continue
+            if win_start <= dt <= win_end:
+                return True
+        return False
 
-            overlap_start = max(seg_start, win_start)
-            overlap_end = min(seg_end, win_end)
-            duration_seconds = int(max(0, (overlap_end - overlap_start).total_seconds()))
-            rows.append(
-                {
-                    "status": _coerce_status(row.get("status", "Running")),
-                    "start": overlap_start,
-                    "end": overlap_end,
-                    "duration": _to_hhmmss(duration_seconds),
-                    "parts": int(max(0, round(float(row.get("partsDelta", 0))))),
-                    "program": (row.get("program") or "").strip() or machine.get("currentProgram", "PROGRAM-001"),
-                    "alarmCode": row.get("alarmCode", machine.get("alarmCode", "-")) or "-",
-                    "alarmMessage": row.get("alarmMessage", machine.get("alarmMessage", "No active alarm"))
-                    or "No active alarm",
-                }
-            )
+    start_iso = range_start.isoformat()
+    end_iso = range_end.isoformat()
 
-    rows.sort(key=lambda item: item["start"])
+    alarm_rows = fetch_alarm_logs(start_iso, end_iso, limit=25)
+    cycle_rows = fetch_cycle_logs(start_iso, end_iso, limit=25)
+    machine_rows = fetch_machine_state_logs(start_iso, end_iso, limit=50)
 
-    # Merge contiguous slices that represent the same logical state.
-    merged: list[dict[str, Any]] = []
-    for row in rows:
-        if not merged:
-            merged.append(dict(row))
+    alarms = []
+    for row in alarm_rows:
+        event_dt = _to_aware(row["event_time"], range_start)
+        if not _in_windows(event_dt):
             continue
-
-        prev = merged[-1]
-        is_contiguous = row["start"] <= prev["end"]
-        same_key = (
-            prev["status"] == row["status"]
-            and prev["program"] == row["program"]
-            and prev["alarmCode"] == row["alarmCode"]
+        alarms.append(
+            {
+                "time": _format_log_time(event_dt),
+                "code": row["code"],
+                "message": row["message"],
+            }
         )
 
-        if is_contiguous and same_key:
-            prev["end"] = max(prev["end"], row["end"])
-            prev["parts"] += row["parts"]
+    cycle_candidates: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in cycle_rows:
+        start_dt = _to_aware(row["start_time"], range_start)
+        end_dt = _to_aware(row["end_time"], range_start)
+        if not any((end_dt >= win_start and start_dt <= win_end) for win_start, win_end in windows):
             continue
+        cycle_seconds = int(row.get("cycle_seconds", 0) or 0)
+        parts = int(row.get("parts", 0) or 0)
+        # Simulator or fast toggles can produce duplicate cycle rows with the same start.
+        key = (str(row.get("program", "")), str(row.get("start_time", "")))
+        existing = cycle_candidates.get(key)
+        if existing is None or end_dt > existing["end_dt"]:
+            cycle_candidates[key] = {
+                "program": str(row.get("program", "")).strip() or "-",
+                "start_dt": start_dt,
+                "end_dt": end_dt,
+                "cycle_seconds": cycle_seconds,
+                "parts": parts,
+            }
 
-        merged.append(dict(row))
+    cycles = []
+    part_interval_seconds = max(1, int(state.get("machine", {}).get("partIntervalSeconds", 60) or 60))
+    deduped_cycles = sorted(cycle_candidates.values(), key=lambda item: item["end_dt"], reverse=True)
+    for row in deduped_cycles:
+        resolved_parts = int(row["parts"])
+        # Backfill a minimal estimate when parts were persisted as zero despite non-trivial cycle duration.
+        if resolved_parts == 0 and int(row["cycle_seconds"]) >= part_interval_seconds:
+            resolved_parts = max(1, int(row["cycle_seconds"]) // part_interval_seconds)
+        cycles.append(
+            {
+                "program": row["program"],
+                "start": _format_log_time(row["start_dt"]),
+                "end": _format_log_time(row["end_dt"]),
+                "cycle": _to_hhmmss(int(row["cycle_seconds"])),
+                "duration": _to_hhmmss(int(row["cycle_seconds"])),
+                "parts": resolved_parts,
+            }
+        )
 
-    alarms: list[dict[str, Any]] = []
-    cycles: list[dict[str, Any]] = []
-    machine_states: list[dict[str, Any]] = []
-
-    # Machine state logs: only when state changes, duration until next state change.
-    merged_state: list[dict[str, Any]] = []
-    for row in merged:
-        if not merged_state:
-            merged_state.append(dict(row))
+    machine_rows_sorted = sorted(
+        machine_rows,
+        key=lambda row: _to_aware(row.get("event_time"), range_start),
+    )
+    effective_window_end = min(_resolve_effective_now(state), range_end)
+    machine_states = []
+    for idx, row in enumerate(machine_rows_sorted):
+        event_dt = _to_aware(row.get("event_time"), range_start)
+        if not _in_windows(event_dt):
             continue
-        prev = merged_state[-1]
-        if row["status"] == prev["status"] and row["start"] <= prev["end"]:
-            prev["end"] = max(prev["end"], row["end"])
-            continue
-        merged_state.append(dict(row))
-
-    for idx, row in enumerate(merged_state):
-        next_start = merged_state[idx + 1]["start"] if idx + 1 < len(merged_state) else row["end"]
-        duration_seconds = int(max(0, (next_start - row["start"]).total_seconds()))
+        next_event_dt = (
+            _to_aware(machine_rows_sorted[idx + 1].get("event_time"), range_end)
+            if idx + 1 < len(machine_rows_sorted)
+            else effective_window_end
+        )
+        raw_duration_seconds = int((next_event_dt - event_dt).total_seconds())
+        duration_seconds = max(0, raw_duration_seconds)
         machine_states.append(
             {
-                "time": _format_log_time(row["start"]),
-                "state": "Downtime" if row["status"] == "Breakdown" else row["status"],
+                "time": _format_log_time(event_dt),
+                "state": "Downtime" if _coerce_status(row["to_state"]) == "Breakdown" else _coerce_status(row["to_state"]),
                 "duration": _to_hhmmss(duration_seconds),
             }
         )
-
-    # Alarm logs: only when alarm starts or alarm code changes.
-    prev_breakdown = False
-    prev_alarm_code = "-"
-    for row in merged:
-        if row["status"] != "Breakdown":
-            prev_breakdown = False
-            prev_alarm_code = "-"
-            continue
-
-        alarm_code = row["alarmCode"] or "-"
-        if (not prev_breakdown) or (alarm_code != prev_alarm_code):
-            alarms.append(
-                {
-                    "time": _format_log_time(row["start"]),
-                    "code": alarm_code,
-                    "message": row["alarmMessage"] or "Breakdown detected",
-                }
-            )
-        prev_breakdown = True
-        prev_alarm_code = alarm_code
-
-    # Cycle logs: one cycle per running block of a program (new cycle when program changes).
-    active_cycle: dict[str, Any] | None = None
-    for row in merged:
-        if row["status"] != "Running":
-            if active_cycle:
-                duration_seconds = int(max(0, (active_cycle["end"] - active_cycle["start"]).total_seconds()))
-                cycles.append(
-                    {
-                        "program": active_cycle["program"],
-                        "start": _format_log_time(active_cycle["start"]),
-                        "end": _format_log_time(active_cycle["end"]),
-                        "cycle": _to_hhmmss(duration_seconds),
-                        "parts": int(active_cycle["parts"]),
-                    }
-                )
-                active_cycle = None
-            continue
-
-        if not active_cycle:
-            active_cycle = {
-                "program": row["program"],
-                "start": row["start"],
-                "end": row["end"],
-                "parts": row["parts"],
-            }
-            continue
-
-        if row["program"] == active_cycle["program"] and row["start"] <= active_cycle["end"]:
-            active_cycle["end"] = max(active_cycle["end"], row["end"])
-            active_cycle["parts"] += row["parts"]
-            continue
-
-        duration_seconds = int(max(0, (active_cycle["end"] - active_cycle["start"]).total_seconds()))
-        cycles.append(
-            {
-                "program": active_cycle["program"],
-                "start": _format_log_time(active_cycle["start"]),
-                "end": _format_log_time(active_cycle["end"]),
-                "cycle": _to_hhmmss(duration_seconds),
-                "parts": int(active_cycle["parts"]),
-            }
-        )
-        active_cycle = {
-            "program": row["program"],
-            "start": row["start"],
-            "end": row["end"],
-            "parts": row["parts"],
-        }
-
-    if active_cycle:
-        duration_seconds = int(max(0, (active_cycle["end"] - active_cycle["start"]).total_seconds()))
-        cycles.append(
-            {
-                "program": active_cycle["program"],
-                "start": _format_log_time(active_cycle["start"]),
-                "end": _format_log_time(active_cycle["end"]),
-                "cycle": _to_hhmmss(duration_seconds),
-                "parts": int(active_cycle["parts"]),
-            }
-        )
+    machine_states.reverse()
 
     return {
-        "alarms": list(reversed(alarms[-25:])),
-        "cycles": list(reversed(cycles[-25:])),
-        "machine": list(reversed(machine_states[-50:])),
+        "alarms": alarms,
+        "cycles": cycles,
+        "machine": machine_states,
     }
 
 

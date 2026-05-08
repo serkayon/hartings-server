@@ -1,11 +1,15 @@
 ﻿import React, { useEffect, useState } from "react";
+import DatePicker from "react-datepicker";
+import "react-datepicker/dist/react-datepicker.css";
 import {
   CalendarDays,
   Filter,
   AlertTriangle,
   FileText,
   Activity,
+  Clock3,
 } from "lucide-react";
+import "./ReportDatePicker.css";
 const RaisedCard = ({ children, className = "" }) => {
   return (
     <div
@@ -18,6 +22,18 @@ const RaisedCard = ({ children, className = "" }) => {
 
 const SHIFT_DURATION_SECONDS = 8 * 60 * 60;
 const clamp = (value) => Math.max(0, Math.min(100, value));
+const PAD = (value) => String(value).padStart(2, "0");
+
+const parseLocalDateTime = (value) => {
+  if (!value) return null;
+  const dt = new Date(value);
+  return Number.isNaN(dt.getTime()) ? null : dt;
+};
+
+const formatLocalDateTime = (value) => {
+  if (!(value instanceof Date) || Number.isNaN(value.getTime())) return "";
+  return value.getFullYear() + "-" + PAD(value.getMonth() + 1) + "-" + PAD(value.getDate()) + "T" + PAD(value.getHours()) + ":" + PAD(value.getMinutes());
+};
 
 const parseDurationToSeconds = (value) => {
   const parts = String(value || "00:00:00").split(":").map(Number);
@@ -144,7 +160,7 @@ const Report = () => {
         </p>
       </div>
 
-      <RaisedCard className="mb-5">
+      <RaisedCard className="mb-5 overflow-visible">
         <div className="p-3 sm:p-5">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
             <div>
@@ -183,6 +199,7 @@ const Report = () => {
 
           {mode === "daily" && (
             <div className="mt-5 grid grid-cols-1 gap-4">
+                <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="min-w-0">
                 <label className="mb-2 block text-sm font-semibold text-[#102a5c]">
                   Date
@@ -221,7 +238,7 @@ const Report = () => {
                   <option>Shift C</option>
                 </select>
               </div>
-
+</div>
               <button
                 onClick={handleApplyFilter}
                 className="flex w-full items-center justify-center gap-2 rounded-2xl bg-[#102a5c] px-5 py-3 text-sm font-semibold text-white transition-all"
@@ -233,21 +250,37 @@ const Report = () => {
           )}
 
           {mode === "custom" && (
-            <div className="mt-5 grid grid-cols-1 gap-4">
-              <div className="rounded-2xl border border-[#dbe3ee] bg-[#f8fafc] p-4">
-                <div className="mb-3 text-base font-bold text-[#102a5c]">From</div>
+            <div className="mt-5 grid grid-cols-1 gap-4 ">
+                 <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-4 ">
+              <div className="rounded-2xl border border-[#dbe3ee] bg-[#f8fafc] p-4 ">
+             
+                <div className="mb-3 text-base font-bold text-[#102a5c] ">From</div>
 
                 <label className="mb-2 block text-sm font-semibold text-[#102a5c]">
                   Date & Time
                 </label>
 
-                <input
-                  type="datetime-local"
-                  name="fromDateTime"
-                  value={filters.fromDateTime}
-                  onChange={handleChange}
-                  className="w-full min-w-0 rounded-2xl border border-[#d7dee8] bg-white px-4 py-3 text-sm outline-none"
-                />
+                <div className="report-calendar-shell">
+                  <CalendarDays size={16} className="report-calendar-icon" />
+                  <DatePicker
+                    selected={parseLocalDateTime(filters.fromDateTime)}
+                    onChange={(date) => {
+                      setFilters((prev) => ({
+                        ...prev,
+                        fromDateTime: formatLocalDateTime(date),
+                      }));
+                    }}
+                    showTimeSelect
+                    timeIntervals={1}
+                    timeCaption="Time"
+                    dateFormat="MM/dd/yyyy hh:mm aa"
+                    className="report-datepicker-input"
+                    calendarClassName="report-datepicker-calendar"
+                    popperClassName="report-datepicker-popper"
+                    wrapperClassName="report-datepicker-wrapper"
+                  />
+                  <Clock3 size={16} className="report-clock-icon" />
+                </div>
               </div>
 
               <div className="rounded-2xl border border-[#dbe3ee] bg-[#f8fafc] p-4">
@@ -257,33 +290,30 @@ const Report = () => {
                   Date & Time
                 </label>
 
-                <input
-                  type="datetime-local"
-                  name="toDateTime"
-                  value={filters.toDateTime}
-                  onChange={handleChange}
-                  className="w-full min-w-0 rounded-2xl border border-[#d7dee8] bg-white px-4 py-3 text-sm outline-none"
-                />
-              </div>
-
-              <div className="rounded-2xl border border-[#dbe3ee] bg-[#f8fafc] p-4">
-                <div className="mb-3 text-base font-bold text-[#102a5c]">
-                  Shift Selection
+                <div className="report-calendar-shell">
+                  <CalendarDays size={16} className="report-calendar-icon" />
+                  <DatePicker
+                    selected={parseLocalDateTime(filters.toDateTime)}
+                    onChange={(date) => {
+                      setFilters((prev) => ({
+                        ...prev,
+                        toDateTime: formatLocalDateTime(date),
+                      }));
+                    }}
+                    showTimeSelect
+                    timeIntervals={1}
+                    timeCaption="Time"
+                    dateFormat="MM/dd/yyyy hh:mm aa"
+                    className="report-datepicker-input"
+                    calendarClassName="report-datepicker-calendar"
+                    popperClassName="report-datepicker-popper"
+                    wrapperClassName="report-datepicker-wrapper"
+                  />
+                  <Clock3 size={16} className="report-clock-icon" />
                 </div>
-
-                <select
-                  name="shift"
-                  value={filters.shift}
-                  onChange={handleChange}
-                  className="w-full rounded-2xl border border-[#d7dee8] bg-white px-4 py-3 text-sm outline-none"
-                >
-                  <option>All</option>
-                  <option>Shift A</option>
-                  <option>Shift B</option>
-                  <option>Shift C</option>
-                </select>
               </div>
 
+</div>
               <button
                 onClick={handleApplyFilter}
                 className="flex w-full items-center justify-center gap-2 rounded-2xl bg-[#102a5c] px-5 py-3 text-sm font-semibold text-white transition-all"
@@ -423,12 +453,13 @@ const Report = () => {
                   </span>
                 </div>
 
-                <div className="overflow-x-auto">
+             <div className="overflow-x-auto rounded-2xl border border-[#e2e8f0]">
+                  <div className="max-h-[420px] overflow-y-auto">
                   <table className="min-w-full text-sm text-[#334155]">
-                    <thead>
+                 <thead className="sticky top-0 z-10 bg-white">
                       <tr className="border-b border-[#dbe4f0] text-left text-[#64748b]">
-                        <th className="p-3">Timestamp</th>
-                        <th className="p-3">Alarm Code</th>
+                        <th className="border-r border-[#dbe4f0] p-3">Timestamp</th>
+                        <th className="border-r border-[#dbe4f0] p-3">Alarm Code</th>
                         <th className="p-3">Message</th>
                       </tr>
                     </thead>
@@ -440,10 +471,11 @@ const Report = () => {
                             key={index}
                             className="border-b border-[#eef2f7]"
                           >
-                            <td className="p-3">
+                          <td className="border-r border-[#eef2f7] p-3">
+
                               {item.time}
                             </td>
-                            <td className="p-3 font-semibold">
+                           <td className="border-r border-[#eef2f7] p-3 font-semibold">
                               {item.code}
                             </td>
                             <td className="p-3">
@@ -455,6 +487,7 @@ const Report = () => {
                     </tbody>
                   </table>
                 </div>
+                  </div>
               </div>
             </RaisedCard>
 
@@ -467,15 +500,15 @@ const Report = () => {
                     Cycle Logs
                   </span>
                 </div>
-
-                <div className="overflow-x-auto">
+<div className="overflow-x-auto rounded-2xl border border-[#e2e8f0]">
+  <div className="max-h-[420px] overflow-y-auto">
                   <table className="min-w-full text-sm text-[#334155]">
-                    <thead>
+                  <thead className="sticky top-0 z-10 bg-white">
                       <tr className="border-b border-[#dbe4f0] text-left text-[#64748b]">
-                        <th className="p-3">Program</th>
-                        <th className="p-3">Cycle Start</th>
-                        <th className="p-3">Cycle End</th>
-                        <th className="p-3">Cycle Time</th>
+                        <th className="border-r border-[#dbe4f0] p-3">Program</th>
+                        <th className="border-r border-[#dbe4f0] p-3">Cycle Start</th>
+                        <th className="border-r border-[#dbe4f0] p-3">Cycle End</th>
+                        <th className="border-r border-[#dbe4f0] p-3">Cycle Time</th>
                         <th className="p-3">Parts</th>
                       </tr>
                     </thead>
@@ -487,16 +520,17 @@ const Report = () => {
                             key={index}
                             className="border-b border-[#eef2f7]"
                           >
-                            <td className="p-3 font-semibold">
+                           <td className="border-r border-[#eef2f7] p-3 font-semibold">
+
                               {item.program || "-"}
                             </td>
-                            <td className="p-3">
+                            <td className="border-r border-[#eef2f7] p-3">
                               {item.start}
                             </td>
-                            <td className="p-3">
+                            <td className="border-r border-[#eef2f7] p-3">
                               {item.end}
                             </td>
-                            <td className="p-3 font-semibold">
+                            <td className="border-r border-[#eef2f7] p-3 font-semibold">
                               {item.cycle}
                             </td>
                             <td className="p-3 font-semibold">
@@ -508,6 +542,7 @@ const Report = () => {
                     </tbody>
                   </table>
                 </div>
+                 </div>
               </div>
             </RaisedCard>
           </div>
@@ -521,13 +556,13 @@ const Report = () => {
                   Machine State Logs
                 </span>
               </div>
-
-              <div className="overflow-x-auto">
+                          <div className="overflow-x-auto rounded-2xl border border-[#e2e8f0]">
+                            <div className="max-h-[420px] overflow-y-auto">
                 <table className="min-w-full text-sm text-[#334155]">
-                  <thead>
+                <thead className="sticky top-0 z-10 bg-white">
                     <tr className="border-b border-[#dbe4f0] text-left text-[#64748b]">
-                      <th className="p-3">Timestamp</th>
-                      <th className="p-3">State</th>
+                   <th className="border-r border-[#dbe4f0] p-3">Timestamp</th>
+                      <th className="border-r border-[#dbe4f0] p-3">State</th>
                       <th className="p-3">Duration</th>
                   
                     </tr>
@@ -540,12 +575,12 @@ const Report = () => {
                           key={index}
                           className="border-b border-[#eef2f7]"
                         >
-                          <td className="p-3">
+                          <td className="p-3 border-r border-[#dbe4f0]">
                             {item.time}
                           </td>
 
                           <td
-                            className={`p-3 font-semibold ${
+                            className={`p-3 border-r border-[#dbe4f0] font-semibold ${
                               item.state === "Downtime"
                                 ? "text-red-500"
                                 : "text-[#102a43]"
@@ -565,6 +600,7 @@ const Report = () => {
                 </table>
               </div>
             </div>
+               </div>
           </RaisedCard>
         </div>
       )}

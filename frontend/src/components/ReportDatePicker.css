@@ -1,0 +1,98 @@
+.report-datepicker-wrapper {
+  width: 100%;
+}
+
+.report-calendar-shell {
+  position: relative;
+}
+
+.report-calendar-icon,
+.report-clock-icon {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  color: #5b6f8f;
+  pointer-events: none;
+}
+
+.report-calendar-icon {
+  left: 12px;
+}
+
+.report-clock-icon {
+  right: 12px;
+}
+
+.report-datepicker-input {
+  width: 100%;
+  height: 46px;
+  border: 1px solid #b8c6da;
+  border-radius: 12px;
+  background: linear-gradient(180deg, #f7fbff 0%, #edf3fa 100%);
+  color: #0f2f5d;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  padding: 10px 38px 10px 36px;
+  outline: none;
+  transition: all 0.2s ease;
+}
+
+.report-datepicker-input:focus {
+  border-color: #365e95;
+  box-shadow: 0 0 0 3px rgba(54, 94, 149, 0.2);
+  background: #ffffff;
+}
+
+.report-datepicker-popper {
+  z-index: 60;
+}
+
+.report-datepicker-calendar {
+  border: 1px solid #28456f !important;
+  border-radius: 14px !important;
+  overflow: hidden;
+  box-shadow: 0 16px 36px rgba(16, 39, 73, 0.25) !important;
+  background: #ffffff !important;
+  font-family: "Segoe UI", "Arial", sans-serif !important;
+}
+
+.report-datepicker-calendar .react-datepicker__header {
+  background: linear-gradient(135deg, #102a5c 0%, #1a437f 100%) !important;
+  border-bottom: 1px solid #193864 !important;
+  padding-top: 10px !important;
+}
+
+.report-datepicker-calendar .react-datepicker__current-month,
+.report-datepicker-calendar .react-datepicker-time__header,
+.report-datepicker-calendar .react-datepicker-year-header,
+.report-datepicker-calendar .react-datepicker__day-name {
+  color: #eaf1fb !important;
+  font-weight: 600 !important;
+}
+
+.report-datepicker-calendar .react-datepicker__day,
+.report-datepicker-calendar .react-datepicker__time-name {
+  color: #183c72 !important;
+  border-radius: 8px;
+}
+
+.report-datepicker-calendar .react-datepicker__day:hover,
+.report-datepicker-calendar .react-datepicker__time-list-item:hover {
+  background: #d9e7fa !important;
+}
+
+.report-datepicker-calendar .react-datepicker__day--selected,
+.report-datepicker-calendar .react-datepicker__time-list-item--selected {
+  background: #0b4fa8 !important;
+  color: #ffffff !important;
+  font-weight: 700 !important;
+}
+
+.report-datepicker-calendar .react-datepicker__time-container {
+  border-left: 1px solid #d3deee !important;
+}
+
+.report-datepicker-calendar .react-datepicker__time-list-item {
+  color: #173d73 !important;
+}

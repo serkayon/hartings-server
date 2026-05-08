@@ -5,6 +5,7 @@ import os
 import sqlite3
 import threading
 from copy import deepcopy
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 try:
@@ -16,6 +17,8 @@ _BACKEND_DIR = Path(__file__).resolve().parents[1]
 _DEFAULT_DB_FILE = _BACKEND_DIR / "app" / "live_state.db"
 DB_FILE = Path(os.getenv("LIVE_DB_FILE", str(_DEFAULT_DB_FILE)))
 LEGACY_STATE_FILE = Path(os.getenv("LIVE_STATE_FILE", str(_BACKEND_DIR / "simulator" / "live_state.json")))
+LOG_RETENTION_DAYS = int(os.getenv("LIVE_LOG_RETENTION_DAYS", "31"))
+PRUNE_INTERVAL_SECONDS = int(os.getenv("LIVE_PRUNE_INTERVAL_SECONDS", "600"))
 _LOCK = threading.Lock()
 
 
@@ -23,6 +26,10 @@ def _connect() -> sqlite3.Connection:
     DB_FILE.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_FILE)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA temp_store=MEMORY")
+    conn.execute("PRAGMA busy_timeout=5000")
     return conn
 
 
@@ -107,6 +114,33 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             alarm_code TEXT NOT NULL DEFAULT '-',
             alarm_message TEXT NOT NULL DEFAULT 'No active alarm'
         );
+
+        CREATE TABLE IF NOT EXISTS machine_state_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_time TEXT NOT NULL,
+            from_state TEXT NOT NULL,
+            to_state TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS alarm_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_time TEXT NOT NULL,
+            alarm_code TEXT NOT NULL,
+            alarm_message TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS cycle_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            program TEXT NOT NULL,
+            start_time TEXT NOT NULL,
+            end_time TEXT NOT NULL,
+            cycle_seconds INTEGER NOT NULL DEFAULT 0,
+            parts INTEGER NOT NULL DEFAULT 0
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_machine_state_log_event_time ON machine_state_log(event_time);
+        CREATE INDEX IF NOT EXISTS idx_alarm_log_event_time ON alarm_log(event_time);
+        CREATE INDEX IF NOT EXISTS idx_cycle_log_start_end ON cycle_log(start_time, end_time);
         """
     )
     cols = {row["name"] for row in conn.execute("PRAGMA table_info(machine_state)").fetchall()}
@@ -115,7 +149,33 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     meta_cols = {row["name"] for row in conn.execute("PRAGMA table_info(meta)").fetchall()}
     if "part_accumulator_seconds" not in meta_cols:
         conn.execute("ALTER TABLE meta ADD COLUMN part_accumulator_seconds REAL NOT NULL DEFAULT 0.0")
+    if "active_cycle_start" not in meta_cols:
+        conn.execute("ALTER TABLE meta ADD COLUMN active_cycle_start TEXT")
+    if "active_cycle_program" not in meta_cols:
+        conn.execute("ALTER TABLE meta ADD COLUMN active_cycle_program TEXT")
+    if "active_cycle_parts" not in meta_cols:
+        conn.execute("ALTER TABLE meta ADD COLUMN active_cycle_parts INTEGER NOT NULL DEFAULT 0")
     conn.commit()
+
+
+def _parse_iso(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(value)
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=timezone.utc)
+        return dt
+    except Exception:
+        return None
+
+
+def _seconds_between(start_iso: str | None, end_iso: str | None) -> int:
+    start = _parse_iso(start_iso)
+    end = _parse_iso(end_iso)
+    if not start or not end or end <= start:
+        return 0
+    return int((end - start).total_seconds())
 
 
 def _upsert_machine(conn: sqlite3.Connection, machine: dict) -> None:
@@ -181,12 +241,15 @@ def _upsert_machine(conn: sqlite3.Connection, machine: dict) -> None:
 
 
 def _replace_series(conn: sqlite3.Connection, series_type: str, data: list[dict], value_key: str) -> None:
-    conn.execute("DELETE FROM machine_series WHERE series_type = ?", (series_type,))
+    # Upsert fixed-size time-series points to avoid delete/reinsert write amplification.
     for idx, row in enumerate(data):
         conn.execute(
             """
             INSERT INTO machine_series (series_type, point_index, time_label, value)
             VALUES (?, ?, ?, ?)
+            ON CONFLICT(series_type, point_index) DO UPDATE SET
+                time_label = excluded.time_label,
+                value = excluded.value
             """,
             (
                 series_type,
@@ -195,6 +258,10 @@ def _replace_series(conn: sqlite3.Connection, series_type: str, data: list[dict]
                 float(row.get(value_key, 0.0)),
             ),
         )
+    conn.execute(
+        "DELETE FROM machine_series WHERE series_type = ? AND point_index >= ?",
+        (series_type, len(data)),
+    )
 
 
 def _upsert_settings(conn: sqlite3.Connection, settings: dict) -> None:
@@ -240,8 +307,11 @@ def _upsert_settings(conn: sqlite3.Connection, settings: dict) -> None:
 def _upsert_meta(conn: sqlite3.Connection, meta: dict) -> None:
     conn.execute(
         """
-        INSERT INTO meta (id, last_tick, sim_speed, sim_clock_mode, manual_shift_name, sim_clock_cursor, part_accumulator_seconds, updated_at)
-        VALUES (1, ?, ?, ?, ?, ?, ?, datetime('now'))
+        INSERT INTO meta (
+            id, last_tick, sim_speed, sim_clock_mode, manual_shift_name, sim_clock_cursor, part_accumulator_seconds,
+            active_cycle_start, active_cycle_program, active_cycle_parts, updated_at
+        )
+        VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
         ON CONFLICT(id) DO UPDATE SET
             last_tick = excluded.last_tick,
             sim_speed = excluded.sim_speed,
@@ -249,6 +319,9 @@ def _upsert_meta(conn: sqlite3.Connection, meta: dict) -> None:
             manual_shift_name = excluded.manual_shift_name,
             sim_clock_cursor = excluded.sim_clock_cursor,
             part_accumulator_seconds = excluded.part_accumulator_seconds,
+            active_cycle_start = excluded.active_cycle_start,
+            active_cycle_program = excluded.active_cycle_program,
+            active_cycle_parts = excluded.active_cycle_parts,
             updated_at = excluded.updated_at
         """,
         (
@@ -258,44 +331,143 @@ def _upsert_meta(conn: sqlite3.Connection, meta: dict) -> None:
             str(meta.get("manualShiftName", "Shift A")),
             meta.get("simClockCursor"),
             float(meta.get("partAccumulatorSeconds", 0.0) or 0.0),
+            meta.get("activeCycleStart"),
+            meta.get("activeCycleProgram"),
+            int(meta.get("activeCycleParts", 0) or 0),
         ),
     )
 
 
-def _sync_timeline(conn: sqlite3.Connection, timeline: list[dict]) -> None:
-    db_count = int(conn.execute("SELECT COUNT(1) AS c FROM status_timeline").fetchone()["c"])
-    state_count = len(timeline)
+def _persist_event_logs(conn: sqlite3.Connection, prev_machine: dict | None, prev_meta: dict | None, state: dict) -> None:
+    machine = state.get("machine", {})
+    meta = state.get("meta", {})
+    event_time = str(meta.get("lastTick") or datetime.now(timezone.utc).isoformat())
 
-    if state_count < db_count:
-        conn.execute("DELETE FROM status_timeline")
-        db_count = 0
+    status_now = str(machine.get("machineStatus", "Running"))
+    prev_status = str((prev_machine or {}).get("machineStatus", status_now))
+    alarm_now = bool(machine.get("alarmActive", False))
+    alarm_code_now = str(machine.get("alarmCode", "-") or "-")
+    alarm_message_now = str(machine.get("alarmMessage", "No active alarm") or "No active alarm")
+    prev_alarm_active = bool((prev_machine or {}).get("alarmActive", False))
+    prev_alarm_code = str((prev_machine or {}).get("alarmCode", "-") or "-")
+    prev_program = str((prev_machine or {}).get("currentProgram", "PROGRAM-001") or "PROGRAM-001")
+    program_now = str(machine.get("currentProgram", prev_program) or prev_program)
+    total_parts_now = int(machine.get("totalParts", 0) or 0)
 
-    for row in timeline[db_count:]:
+    if prev_machine and prev_status != status_now:
         conn.execute(
-            """
-            INSERT INTO status_timeline (
-                start_time, end_time, status, parts_delta, power_wh, program, alarm_code, alarm_message
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                str(row.get("start", "")),
-                str(row.get("end", "")),
-                str(row.get("status", "Running")),
-                int(row.get("partsDelta", 0)),
-                float(row.get("powerWh", 0.0)),
-                str(row.get("program", "")),
-                str(row.get("alarmCode", "-")),
-                str(row.get("alarmMessage", "No active alarm")),
-            ),
+            "INSERT INTO machine_state_log (event_time, from_state, to_state) VALUES (?, ?, ?)",
+            (event_time, prev_status, status_now),
         )
 
-    if timeline:
-        cutoff_iso = timeline[0].get("start")
-        if cutoff_iso:
-            conn.execute("DELETE FROM status_timeline WHERE end_time < ?", (str(cutoff_iso),))
+    if alarm_now and ((not prev_alarm_active) or (alarm_code_now != prev_alarm_code)):
+        conn.execute(
+            "INSERT INTO alarm_log (event_time, alarm_code, alarm_message) VALUES (?, ?, ?)",
+            (event_time, alarm_code_now, alarm_message_now),
+        )
+
+    active_cycle_start = meta.get("activeCycleStart")
+    active_cycle_program = meta.get("activeCycleProgram")
+    active_cycle_parts = int(meta.get("activeCycleParts", 0) or 0)
+    prev_last_tick = (prev_meta or {}).get("lastTick")
+
+    if status_now == "Running":
+        if not active_cycle_start:
+            meta["activeCycleStart"] = prev_last_tick or event_time
+            meta["activeCycleProgram"] = program_now
+            meta["activeCycleParts"] = total_parts_now
+        elif active_cycle_program and active_cycle_program != program_now:
+            cycle_seconds = _seconds_between(active_cycle_start, event_time)
+            parts_delta = max(0, total_parts_now - active_cycle_parts)
+            conn.execute(
+                """
+                INSERT INTO cycle_log (program, start_time, end_time, cycle_seconds, parts)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (active_cycle_program, active_cycle_start, event_time, cycle_seconds, parts_delta),
+            )
+            meta["activeCycleStart"] = event_time
+            meta["activeCycleProgram"] = program_now
+            meta["activeCycleParts"] = total_parts_now
+    else:
+        if active_cycle_start and active_cycle_program:
+            cycle_seconds = _seconds_between(active_cycle_start, event_time)
+            parts_delta = max(0, total_parts_now - active_cycle_parts)
+            conn.execute(
+                """
+                INSERT INTO cycle_log (program, start_time, end_time, cycle_seconds, parts)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (active_cycle_program, active_cycle_start, event_time, cycle_seconds, parts_delta),
+            )
+        meta["activeCycleStart"] = None
+        meta["activeCycleProgram"] = None
+        meta["activeCycleParts"] = total_parts_now
 
 
-def _hydrate_state(conn: sqlite3.Connection) -> dict:
+def _prune_old_logs(conn: sqlite3.Connection, state: dict) -> None:
+    meta = state.get("meta", {})
+    now_dt = _parse_iso(meta.get("lastTick")) or datetime.now(timezone.utc)
+    last_prune_at = _parse_iso(meta.get("lastPruneAt"))
+    if last_prune_at and (now_dt - last_prune_at).total_seconds() < PRUNE_INTERVAL_SECONDS:
+        return
+
+    now_dt = _parse_iso(meta.get("lastTick")) or datetime.now(timezone.utc)
+    cutoff_iso = (now_dt - timedelta(days=LOG_RETENTION_DAYS)).isoformat()
+
+    conn.execute("DELETE FROM alarm_log WHERE event_time < ?", (cutoff_iso,))
+    conn.execute("DELETE FROM machine_state_log WHERE event_time < ?", (cutoff_iso,))
+    conn.execute("DELETE FROM cycle_log WHERE end_time < ?", (cutoff_iso,))
+    conn.execute("DELETE FROM status_timeline WHERE end_time < ?", (cutoff_iso,))
+    meta["lastPruneAt"] = now_dt.isoformat()
+
+
+def _append_latest_timeline_row(conn: sqlite3.Connection, timeline: list[dict]) -> None:
+    if not timeline:
+        return
+    row = timeline[-1]
+    latest = conn.execute(
+        """
+        SELECT start_time, end_time, status, parts_delta, power_wh, program, alarm_code, alarm_message
+        FROM status_timeline
+        ORDER BY id DESC
+        LIMIT 1
+        """
+    ).fetchone()
+    candidate = (
+        str(row.get("start", "")),
+        str(row.get("end", "")),
+        str(row.get("status", "Running")),
+        int(row.get("partsDelta", 0)),
+        float(row.get("powerWh", 0.0)),
+        str(row.get("program", "")),
+        str(row.get("alarmCode", "-")),
+        str(row.get("alarmMessage", "No active alarm")),
+    )
+    if latest:
+        latest_tuple = (
+            latest["start_time"],
+            latest["end_time"],
+            latest["status"],
+            int(latest["parts_delta"] or 0),
+            float(latest["power_wh"] or 0.0),
+            latest["program"] or "",
+            latest["alarm_code"] or "-",
+            latest["alarm_message"] or "No active alarm",
+        )
+        if latest_tuple == candidate:
+            return
+    conn.execute(
+        """
+        INSERT INTO status_timeline (
+            start_time, end_time, status, parts_delta, power_wh, program, alarm_code, alarm_message
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        candidate,
+    )
+
+
+def _hydrate_state(conn: sqlite3.Connection, include_timeline: bool = False) -> dict:
     state = initial_state()
 
     machine_row = conn.execute("SELECT * FROM machine_state WHERE id = 1").fetchone()
@@ -377,34 +549,56 @@ def _hydrate_state(conn: sqlite3.Connection) -> dict:
                 "manualShiftName": meta_row["manual_shift_name"] or "Shift A",
                 "simClockCursor": meta_row["sim_clock_cursor"] or state["meta"]["simClockCursor"],
                 "partAccumulatorSeconds": float(meta_row["part_accumulator_seconds"] or 0.0),
+                "activeCycleStart": meta_row["active_cycle_start"],
+                "activeCycleProgram": meta_row["active_cycle_program"],
+                "activeCycleParts": int(meta_row["active_cycle_parts"] or 0),
             }
         )
 
-    timeline_rows = conn.execute(
-        """
-        SELECT start_time, end_time, status, parts_delta, power_wh, program, alarm_code, alarm_message
-        FROM status_timeline
-        ORDER BY id ASC
-        """
-    ).fetchall()
-    state["meta"]["statusTimeline"] = [
-        {
-            "start": row["start_time"],
-            "end": row["end_time"],
-            "status": row["status"],
-            "partsDelta": int(row["parts_delta"] or 0),
-            "powerWh": float(row["power_wh"] or 0.0),
-            "program": row["program"] or "",
-            "alarmCode": row["alarm_code"] or "-",
-            "alarmMessage": row["alarm_message"] or "No active alarm",
-        }
-        for row in timeline_rows
-    ]
+    if include_timeline:
+        timeline_rows = conn.execute(
+            """
+            SELECT start_time, end_time, status, parts_delta, power_wh, program, alarm_code, alarm_message
+            FROM status_timeline
+            ORDER BY id ASC
+            """
+        ).fetchall()
+        state["meta"]["statusTimeline"] = [
+            {
+                "start": row["start_time"],
+                "end": row["end_time"],
+                "status": row["status"],
+                "partsDelta": int(row["parts_delta"] or 0),
+                "powerWh": float(row["power_wh"] or 0.0),
+                "program": row["program"] or "",
+                "alarmCode": row["alarm_code"] or "-",
+                "alarmMessage": row["alarm_message"] or "No active alarm",
+            }
+            for row in timeline_rows
+        ]
 
     return state
 
 
 def _persist_state(conn: sqlite3.Connection, state: dict) -> None:
+    previous_machine_row = conn.execute("SELECT * FROM machine_state WHERE id = 1").fetchone()
+    previous_meta_row = conn.execute("SELECT * FROM meta WHERE id = 1").fetchone()
+    prev_machine = None
+    if previous_machine_row:
+        prev_machine = {
+            "machineStatus": previous_machine_row["machine_status"] or "Running",
+            "alarmActive": bool(previous_machine_row["alarm_active"] or 0),
+            "alarmCode": previous_machine_row["alarm_code"] or "-",
+            "currentProgram": previous_machine_row["current_program"] or "PROGRAM-001",
+        }
+    prev_meta = None
+    if previous_meta_row:
+        prev_meta = {
+            "lastTick": previous_meta_row["last_tick"],
+        }
+
+    _persist_event_logs(conn, prev_machine, prev_meta, state)
+
     machine = state.get("machine", {})
     settings = state.get("settings", {})
     meta = state.get("meta", {})
@@ -413,7 +607,8 @@ def _persist_state(conn: sqlite3.Connection, state: dict) -> None:
     _replace_series(conn, "feed", machine.get("feedRateData", []), "rate")
     _upsert_settings(conn, settings)
     _upsert_meta(conn, meta)
-    _sync_timeline(conn, meta.get("statusTimeline", []))
+    _append_latest_timeline_row(conn, meta.get("statusTimeline", []))
+    _prune_old_logs(conn, state)
     conn.commit()
 
 
@@ -444,13 +639,13 @@ def ensure_state_file() -> None:
     ensure_db()
 
 
-def load_state() -> dict:
+def load_state(include_timeline: bool = False) -> dict:
     ensure_db()
     with _LOCK:
         with _connect() as conn:
             _ensure_schema(conn)
             _bootstrap_from_legacy_or_default(conn)
-            return _hydrate_state(conn)
+            return _hydrate_state(conn, include_timeline=include_timeline)
 
 
 def save_state(state: dict) -> None:
@@ -472,3 +667,77 @@ def update_state(mutator):
     mutator(state)
     save_state(state)
     return deepcopy(state)
+
+
+def fetch_alarm_logs(start_iso: str, end_iso: str, limit: int = 25) -> list[dict]:
+    ensure_db()
+    with _LOCK:
+        with _connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT event_time, alarm_code, alarm_message
+                FROM alarm_log
+                WHERE event_time >= ? AND event_time <= ?
+                ORDER BY event_time DESC
+                LIMIT ?
+                """,
+                (start_iso, end_iso, int(limit)),
+            ).fetchall()
+            return [
+                {
+                    "event_time": row["event_time"],
+                    "code": row["alarm_code"],
+                    "message": row["alarm_message"],
+                }
+                for row in rows
+            ]
+
+
+def fetch_cycle_logs(start_iso: str, end_iso: str, limit: int = 25) -> list[dict]:
+    ensure_db()
+    with _LOCK:
+        with _connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT program, start_time, end_time, cycle_seconds, parts
+                FROM cycle_log
+                WHERE end_time >= ? AND start_time <= ?
+                ORDER BY end_time DESC
+                LIMIT ?
+                """,
+                (start_iso, end_iso, int(limit)),
+            ).fetchall()
+            return [
+                {
+                    "program": row["program"],
+                    "start_time": row["start_time"],
+                    "end_time": row["end_time"],
+                    "cycle_seconds": int(row["cycle_seconds"] or 0),
+                    "parts": int(row["parts"] or 0),
+                }
+                for row in rows
+            ]
+
+
+def fetch_machine_state_logs(start_iso: str, end_iso: str, limit: int = 50) -> list[dict]:
+    ensure_db()
+    with _LOCK:
+        with _connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT event_time, from_state, to_state
+                FROM machine_state_log
+                WHERE event_time >= ? AND event_time <= ?
+                ORDER BY event_time DESC
+                LIMIT ?
+                """,
+                (start_iso, end_iso, int(limit)),
+            ).fetchall()
+            return [
+                {
+                    "event_time": row["event_time"],
+                    "from_state": row["from_state"],
+                    "to_state": row["to_state"],
+                }
+                for row in rows
+            ]

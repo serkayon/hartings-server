@@ -107,6 +107,25 @@ const withTimeProgress = (summary = {}, totalDurationSeconds = SHIFT_DURATION_SE
   };
 };
 
+const withBarPercentagesFromTimes = (summary = {}, totalDurationSeconds = SHIFT_DURATION_SECONDS) => {
+  const runtimeSeconds = parseDurationToSeconds(summary.runtime || "00:00:00");
+  const breakdownSeconds = parseDurationToSeconds(summary.breakdown || "00:00:00");
+  const idleSeconds = parseDurationToSeconds(summary.idle || "00:00:00");
+  const consumedSeconds = Math.min(
+    totalDurationSeconds,
+    runtimeSeconds + breakdownSeconds + idleSeconds,
+  );
+  const remainingSeconds = Math.max(totalDurationSeconds - consumedSeconds, 0);
+
+  return {
+    ...summary,
+    runtimePercentage: clamp((runtimeSeconds / totalDurationSeconds) * 100),
+    breakdownPercentage: clamp((breakdownSeconds / totalDurationSeconds) * 100),
+    idlePercentage: clamp((idleSeconds / totalDurationSeconds) * 100),
+    remainingPercentage: clamp((remainingSeconds / totalDurationSeconds) * 100),
+  };
+};
+
 const outerCardClass =
   "rounded-[30px] bg-[#d9dee8] p-[2px] shadow-[0_20px_40px_rgba(15,23,42,0.14),0_8px_14px_rgba(15,23,42,0.08)]";
 const innerCardClass =
@@ -306,11 +325,16 @@ const MonitoringDashboard = () => {
     ],
   );
 
-  const shiftSummariesRaw =
+  const hasBackendShiftSummaries =
     Array.isArray(dashboardData.shiftSummaries) &&
-    dashboardData.shiftSummaries.length > 0
-      ? dashboardData.shiftSummaries
-      : [
+    dashboardData.shiftSummaries.length > 0;
+
+  const shiftSummaries = hasBackendShiftSummaries
+    ? dashboardData.shiftSummaries.map((summary) => ({
+        ...summary,
+        remainingTime: summary.remainingTime || "00:00:00",
+      }))
+    : [
           {
             name: "Shift A",
             start: "08:00",
@@ -354,9 +378,13 @@ const MonitoringDashboard = () => {
             power: "0 kWh",
           },
         ];
-
-  const shiftSummaries = shiftSummariesRaw.map((summary) =>
-    withTimeProgress(summary, SHIFT_DURATION_SECONDS),
+  const normalizedShiftSummaries = hasBackendShiftSummaries
+    ? shiftSummaries
+    : shiftSummaries.map((summary) =>
+        withTimeProgress(summary, SHIFT_DURATION_SECONDS),
+      );
+  const shiftSummariesForBar = normalizedShiftSummaries.map((summary) =>
+    withBarPercentagesFromTimes(summary, SHIFT_DURATION_SECONDS),
   );
 
   const consolidatedSummaryRaw = dashboardData.consolidatedSummary || {
@@ -373,8 +401,14 @@ const MonitoringDashboard = () => {
     parts: dashboardData.totalParts,
     power: `${Math.max(1, Math.round(dashboardData.spindleSpeed / 1000))} kWh`,
   };
-  const consolidatedSummary = withTimeProgress(
-    consolidatedSummaryRaw,
+  const consolidatedSummary = dashboardData.consolidatedSummary
+    ? {
+        ...consolidatedSummaryRaw,
+        remainingTime: consolidatedSummaryRaw.remainingTime || "00:00:00",
+      }
+    : withTimeProgress(consolidatedSummaryRaw, DAY_DURATION_SECONDS);
+  const consolidatedSummaryForBar = withBarPercentagesFromTimes(
+    consolidatedSummary,
     DAY_DURATION_SECONDS,
   );
 
@@ -548,7 +582,7 @@ const MonitoringDashboard = () => {
 </div>
 
       <div className="grid gap-3 lg:grid-cols-2 xl:grid-cols-3">
-        {shiftSummaries.map((shiftCard) => (
+        {shiftSummariesForBar.map((shiftCard) => (
           <RaisedCard key={shiftCard.name}>
             <div className="px-5 py-5">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -660,7 +694,7 @@ const MonitoringDashboard = () => {
       </div>
 
       <div className="rounded-full bg-[#eef2f7] px-4 py-2 text-sm font-semibold text-[#102a5c]">
-        Remaining : {consolidatedSummary.remainingTime || "00:00:00"}
+        Remaining : {consolidatedSummaryForBar.remainingTime || "00:00:00"}
       </div>
     </div>
 
@@ -668,10 +702,10 @@ const MonitoringDashboard = () => {
     <div className="mt-3">
 
       <div className="flex overflow-hidden rounded-full h-4 bg-[#dfe5ee]">
-        <div className="bg-[#1ba34a]" style={{ width: `${consolidatedSummary.runtimePercentage}%` }} />
-        <div className="bg-[#ef4444]" style={{ width: `${consolidatedSummary.breakdownPercentage}%` }} />
-        <div className="bg-[#6082B6]" style={{ width: `${consolidatedSummary.idlePercentage}%` }} />
-        <div className="bg-[#DFE5EE]" style={{ width: `${consolidatedSummary.remainingPercentage || 0}%` }} />
+        <div className="bg-[#1ba34a]" style={{ width: `${consolidatedSummaryForBar.runtimePercentage}%` }} />
+        <div className="bg-[#ef4444]" style={{ width: `${consolidatedSummaryForBar.breakdownPercentage}%` }} />
+        <div className="bg-[#6082B6]" style={{ width: `${consolidatedSummaryForBar.idlePercentage}%` }} />
+        <div className="bg-[#DFE5EE]" style={{ width: `${consolidatedSummaryForBar.remainingPercentage || 0}%` }} />
       </div>
 
       {/* STATUS CARDS */}
@@ -685,7 +719,7 @@ const MonitoringDashboard = () => {
           </div>
 
           <div className="mt-2 text-xl font-bold text-[#1BA34A]">
-            {consolidatedSummary.runtime}
+            {consolidatedSummaryForBar.runtime}
           </div>
         </div>
 
@@ -697,7 +731,7 @@ const MonitoringDashboard = () => {
           </div>
 
           <div className="mt-2 text-xl font-bold text-[#EF4444]">
-            {consolidatedSummary.breakdown}
+            {consolidatedSummaryForBar.breakdown}
           </div>
         </div>
 
@@ -709,7 +743,7 @@ const MonitoringDashboard = () => {
           </div>
 
           <div className="mt-2 text-xl font-bold text-[#6082B6]">
-            {consolidatedSummary.idle}
+            {consolidatedSummaryForBar.idle}
           </div>
         </div>
 
@@ -727,7 +761,7 @@ const MonitoringDashboard = () => {
         </div>
 
         <div className="mt-2 text-2xl font-bold text-[#102a5c]">
-          {consolidatedSummary.parts}
+          {consolidatedSummaryForBar.parts}
         </div>
       </div>
 
@@ -739,7 +773,7 @@ const MonitoringDashboard = () => {
         </div>
 
         <div className="mt-2 text-2xl font-bold text-[#102a5c]">
-          {consolidatedSummary.power}
+          {consolidatedSummaryForBar.power}
         </div>
       </div>
 
@@ -747,7 +781,7 @@ const MonitoringDashboard = () => {
   </div>
 </RaisedCard>
            <RaisedCard className="w-full">
-  <div className="px-3 py-4 sm:px-5 sm:py-5 h-[297px]">
+  <div className="px-3 py-4 sm:px-3 sm:py-5 h-[297px]">
     
     {/* Header */}
     <div className="flex items-center justify-between gap-2 sm:gap-3">
@@ -762,7 +796,7 @@ const MonitoringDashboard = () => {
     </div>
 
     {/* Alarm Body */}
-    <div className="mt-3 rounded-[22px] sm:rounded-[28px] bg-[linear-gradient(180deg,#ffffff_0%,#fff6eb_100%)] px-4 py-4 sm:px-5 sm:py-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.9),0_10px_22px_rgba(15,23,42,0.06)]">
+    <div className="mt-3 rounded-[22px] sm:rounded-[28px] bg-[linear-gradient(180deg,#ffffff_0%,#fff6eb_100%)] px-4 py-2 sm:px-5 sm:py-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.9),0_10px_22px_rgba(15,23,42,0.06)]">
       
       {/* Top Section */}
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
